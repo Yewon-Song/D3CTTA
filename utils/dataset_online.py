@@ -445,6 +445,8 @@ class OnlineSemanticKITTIDataset(OnlineBaseDataset, ABC):
         self.split_size = split_size
         self.level = level
         self.corrupt = corrupt
+        if corrupt_list is None:
+            corrupt_list = ['beam_missing','cross_sensor','crosstalk','fog','incomplete_echo','motion_blur','snow']
         self.corrupt_list = corrupt_list
 
         if self.split_size == 250:
@@ -733,6 +735,8 @@ class OnlineSemanticKITTIDataset(OnlineBaseDataset, ABC):
         self.split_size = split_size
         self.level = level
         self.corrupt = corrupt
+        if corrupt_list is None:
+            corrupt_list = ['beam_missing','cross_sensor','crosstalk','fog','incomplete_echo','motion_blur','snow']
         self.corrupt_list = corrupt_list
 
         if self.split_size == 250:
@@ -1574,7 +1578,8 @@ def get_online_dataset(dataset_name: str,
                        noisy_odo: bool = False,
                        odo_roto_bounds: int = None,
                        odo_tras_bounds: float = None,
-                       synthia_seq: list=None) -> OnlineBaseDataset:
+                       synthia_seq: list=None,
+                       corrupt_list: list = None) -> OnlineBaseDataset:
 
     if aug_parameters is not None:
         input_transforms = get_augmentations(aug_parameters)
@@ -1601,7 +1606,8 @@ def get_online_dataset(dataset_name: str,
                                                     num_classes=num_classes,
                                                     noisy_odo=noisy_odo,
                                                     odo_roto_bounds=odo_roto_bounds,
-                                                    odo_tras_bounds=odo_tras_bounds)
+                                                    odo_tras_bounds=odo_tras_bounds,
+                                                    corrupt_list=corrupt_list)
 
     elif dataset_name == 'nuScenes':
         _version = 'v1.0-trainval' if version == 'full' else 'v1.0-mini'

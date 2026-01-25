@@ -1,0 +1,14 @@
+# local outputs
+experiments/
+pretrained_models/
+wandb/
+__pycache__/
+# Python
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.so
+# C extensions
+# Distribution / packaging
+.Python

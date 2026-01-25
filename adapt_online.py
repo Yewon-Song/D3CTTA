@@ -11,7 +11,7 @@ from models import MinkUNet18_HEADS, MinkUNet18_MCMC
 from utils.config import get_config
 from utils.collation import CollateSeparated, CollateFN
 from utils.dataset_online import get_online_dataset
-# from utils.online_logger import OnlineWandbLogger, OnlineCSVLogger
+from utils.online_logger import OnlineWandbLogger, OnlineCSVLogger
 from utils.pseudo import PseudoLabel
 from pipelines import OneDomainAdaptation, OnlineTrainer
 
@@ -22,7 +22,7 @@ torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 os.environ['PYTHONHASHSEED'] = str(1234)
 
-torch.cuda.set_device(1)
+torch.cuda.set_device(0)
 
 
 parser = argparse.ArgumentParser()
@@ -73,7 +73,8 @@ def train(config, split_size=4071, save_preds=False):
                                       ignore_label=config.dataset.ignore_label,
                                       split_size=split_size,
                                       mapping_path=mapping_path,
-                                      num_classes=config.model.out_classes)
+                                      num_classes=config.model.out_classes,
+                                      corrupt_list=config.dataset.corrupt_type)
 
     adapt_dataset = get_online_dataset(dataset_name=config.dataset.name,
                                        dataset_path=config.dataset.dataset_path,
@@ -85,7 +86,8 @@ def train(config, split_size=4071, save_preds=False):
                                        ignore_label=config.dataset.ignore_label,
                                        split_size=split_size,
                                        mapping_path=mapping_path,
-                                       num_classes=config.model.out_classes)
+                                       num_classes=config.model.out_classes,
+                                       corrupt_list=config.dataset.corrupt_type)
 
     Model = getattr(models, config.model.name)
     source_model = Model(config.model.in_feat_size, config.model.out_classes)
@@ -118,16 +120,16 @@ def train(config, split_size=4071, save_preds=False):
     save_dir = os.path.join(config.pipeline.save_dir, run_name)
     os.makedirs(save_dir, exist_ok=True)
 
-    # wandb_logger = OnlineWandbLogger(project=config.pipeline.wandb.project_name,
-    #                                  entity=config.pipeline.wandb.entity_name,
-    #                                  name=run_name,
-    #                                  offline=config.pipeline.wandb.offline,
-    #                                  config=mini_configs)
+    wandb_logger = OnlineWandbLogger(project=config.pipeline.wandb.project_name,
+                                     entity=config.pipeline.wandb.entity_name,
+                                     name=run_name,
+                                     offline=config.pipeline.wandb.offline,
+                                     config=mini_configs)
 
-    # csv_logger = OnlineCSVLogger(save_dir=save_dir,
-    #                              version='logs')
+    csv_logger = OnlineCSVLogger(save_dir=save_dir,
+                                 version='logs')
 
-    # loggers = [wandb_logger, csv_logger]
+    loggers = [wandb_logger, csv_logger]
 
     try:
         is_spatiotemporal = config.pipeline.is_spatiotemporal
@@ -140,6 +142,7 @@ def train(config, split_size=4071, save_preds=False):
                             device=config.pipeline.gpu,
                             default_root_dir=config.pipeline.save_dir,
                             weights_save_path=os.path.join(save_dir, 'checkpoints'),
+                            loggers=loggers,
                             save_checkpoint_every=config.pipeline.trainer.save_checkpoint_every,
                             source_checkpoint=config.pipeline.source_model,
                             student_checkpoint=config.pipeline.student_model,

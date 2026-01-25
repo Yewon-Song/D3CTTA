@@ -36,8 +36,8 @@ pipeline:
   eps: 0.25
   segmentation_beta: 1.0
   seed: 1234
-  save_dir: 'experiments/gipso/synth4d2kitti/'
-  source_model: '/home/yewon/project/tta/D3CTTA/pretrained_models/Synth4D-turing/epoch=99-step=24999.ckpt'
+  save_dir: 'experiments/reproduce/synth4d2kitti/'
+  source_model: '/home/yewon/project/tta/D3CTTA/pretrained_models/d3ctta-download/epoch=99-step=12499.ckpt'
   student_model: null
   topk_matches: -1
   random_time_window: false

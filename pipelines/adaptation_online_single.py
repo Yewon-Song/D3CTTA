@@ -26,7 +26,7 @@ sys.path.append('./utils/')
 import open3d as o3d
 
 import pickle
-torch.cuda.set_device(1)
+torch.cuda.set_device(0)
 
 
 class OneDomainAdaptation(object):
@@ -117,7 +117,7 @@ class OneDomainAdaptation(object):
 
         iou_tmp = jaccard_score(pred_seg.cpu().numpy(), labels.cpu().numpy(), average=None,
                                 labels=np.arange(0, self.num_classes),
-                                zero_division=-0.1)
+                                zero_division=0)
         present_labels = np.arange(0, self.num_classes)
         iou_tmp[iou_tmp==1] = 0
         names = [os.path.join('training', n + '_iou') for n in self.adapt_dataset.class2names[present_labels]]
@@ -264,7 +264,7 @@ class OnlineTrainer(object):
     def adapt_double(self):
 
         self.load_source_model()
-        self.pipeline.prompt_t3a.copy_model()
+        self.pipeline.adapt_method.copy_model()
 
         for i, corrupt in enumerate(self.corrupt_type):
             self.corrupt = corrupt

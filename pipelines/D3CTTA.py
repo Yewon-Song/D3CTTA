@@ -17,7 +17,7 @@ from sklearn.neighbors import NearestNeighbors
 from models import DistanceBasedBatchNorm
 import open3d as o3d
 
-torch.cuda.set_device(1)
+torch.cuda.set_device(0)
 
 def softmax_entropy(x):
     """Entropy of softmax distribution from logits."""
@@ -113,7 +113,7 @@ class D3Ctta(nn.Module):
             self.update_proto_multi(pred_source.argmax(1)[indices][indices_filter[indices]], feat_source[indices][indices_filter[indices]], i)
          
 
-        domain = self.detect_domain_shift(bottle.cpu(), self.prev_mean)
+        domain = self.detect_domain_shift(bottle.F, self.prev_mean)
         if domain == -1:
             self.Q.append(torch.zeros(1024, self.num_classes).cuda())
             self.G.append(torch.zeros(1024, 1024).cuda())
