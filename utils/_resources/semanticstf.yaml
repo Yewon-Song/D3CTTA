@@ -1,0 +1,98 @@
+# This file is covered by the LICENSE file in the root of this project.
+# SemanticSTF dataset label configuration
+# Based on the original semanticstf.yaml from the dataset
+
+labels:
+  0 : "unlabeled"
+  1 : "car"
+  2 : "bicycle"
+  3 : "motorcycle"
+  4 : "truck"
+  5 : "other-vehicle"
+  6 : "person"
+  7 : "bicyclist"
+  8 : "motorcyclist"
+  9 : "road"
+  10: "parking"
+  11: "sidewalk"
+  12: "other-ground"
+  13: "building"
+  14: "fence"
+  15: "vegetation"
+  16: "trunk"
+  17: "terrain"
+  18: "pole"
+  19: "traffic-sign"
+  20: "invalid"
+
+color_map: # RGB color for each class
+  0 : [0, 0, 0]         # unlabeled
+  1 : [100, 150, 245]   # car
+  2 : [100, 230, 245]   # bicycle
+  3 : [30, 60, 150]     # motorcycle
+  4 : [80, 30, 180]     # truck
+  5 : [100, 80, 250]    # other-vehicle
+  6 : [155, 30, 30]     # person
+  7 : [255, 40, 200]    # bicyclist
+  8 : [150, 30, 90]     # motorcyclist
+  9 : [255, 0, 255]     # road
+  10: [255, 150, 255]   # parking
+  11: [75, 0, 75]       # sidewalk
+  12: [175, 0, 75]      # other-ground
+  13: [255, 200, 0]     # building
+  14: [255, 120, 50]    # fence
+  15: [0, 175, 0]       # vegetation
+  16: [135, 60, 0]      # trunk
+  17: [150, 240, 80]    # terrain
+  18: [255, 240, 150]   # pole
+  19: [255, 0, 0]       # traffic-sign
+  20: [0, 0, 0]         # invalid
+
+# Mapping from original labels to 7-class training labels
+# 7 classes: vehicle(0), pedestrian(1), road(2), sidewalk(3), terrain(4), manmade(5), vegetation(6)
+# Following SemanticKITTI's convention where only car->vehicle, person->pedestrian
+learning_map:
+  0 : -1     # "unlabeled" -> ignored
+  1 : 0      # "car" -> vehicle
+  2 : -1     # "bicycle" -> ignored (following SemanticKITTI)
+  3 : -1     # "motorcycle" -> ignored (following SemanticKITTI)
+  4 : -1     # "truck" -> ignored (following SemanticKITTI)
+  5 : -1     # "other-vehicle" -> ignored
+  6 : 1      # "person" -> pedestrian
+  7 : -1     # "bicyclist" -> ignored (following SemanticKITTI)
+  8 : -1     # "motorcyclist" -> ignored (following SemanticKITTI)
+  9 : 2      # "road" -> road
+  10: 2      # "parking" -> road
+  11: 3      # "sidewalk" -> sidewalk
+  12: -1     # "other-ground" -> ignored
+  13: 5      # "building" -> manmade
+  14: 5      # "fence" -> manmade
+  15: 6      # "vegetation" -> vegetation
+  16: 6      # "trunk" -> vegetation
+  17: 4      # "terrain" -> terrain
+  18: 5      # "pole" -> manmade
+  19: 5      # "traffic-sign" -> manmade
+  20: -1     # "invalid" -> ignored
+
+learning_map_inv: # inverse of previous map
+  -1: 0      # "unlabeled/ignored"
+  0 : 1      # "vehicle" -> car
+  1 : 6      # "pedestrian" -> person
+  2 : 9      # "road" -> road
+  3 : 11     # "sidewalk" -> sidewalk
+  4 : 17     # "terrain" -> terrain
+  5 : 13     # "manmade" -> building
+  6 : 15     # "vegetation" -> vegetation
+
+learning_ignore: # Ignore classes
+  -1: True   # "unlabeled/ignored"
+  0 : False  # "vehicle"
+  1 : False  # "pedestrian"
+  2 : False  # "road"
+  3 : False  # "sidewalk"
+  4 : False  # "terrain"
+  5 : False  # "manmade"
+  6 : False  # "vegetation"
+
+# Maximum label value for lookup table
+max_label: 20

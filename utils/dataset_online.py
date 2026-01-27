@@ -991,6 +991,278 @@ class OnlineSemanticKITTIDataset(OnlineBaseDataset, ABC):
         return sem_label.astype(np.int32)
 
 
+class OnlineSemanticSTFDataset(OnlineBaseDataset, ABC):
+    """Online dataset for SemanticSTF (Semantic Segmentation under adverse weather conditions).
+
+    SemanticSTF uses sequential labels (0-18) for 19 classes, different from SemanticKITTI's
+    sparse label format. This dataset is designed for test-time adaptation under weather
+    corruptions like fog, rain, snow, etc.
+
+    Dataset structure:
+        dataset_path/
+            train/
+                velodyne/*.bin
+                labels/*.label
+                train.txt  (format: filename,weather_type)
+            test/
+                velodyne/*.bin
+                labels/*.label
+                test.txt
+            val/
+                velodyne/*.bin
+                labels/*.label
+                val.txt
+
+    Total scans: 2076 (dense_fog: 694, light_fog: 631, snow: 637, rain: 114)
+    """
+    def __init__(self,
+                 version='full',
+                 phase='eval',
+                 dataset_path='/data/SemanticSTF',
+                 mapping_path='./_resources/semanticstf.yaml',
+                 sequence_idx=0,
+                 voxel_size=0.05,
+                 use_intensity=False,
+                 augment_data=False,
+                 input_transforms=None,
+                 sub_num=50000,
+                 max_time_wdw=1,
+                 oracle_pts=0,
+                 device=None,
+                 ignore_label=-1,
+                 clip_range=[[-50, 50], [-50, 50]],
+                 split_size=250,
+                 num_classes=7,
+                 noisy_odo=False,
+                 odo_roto_bounds=None,
+                 odo_tras_bounds=None,
+                 weather='dense_fog',
+                 corrupt_list=None):
+
+        super().__init__(version=version,
+                         phase=phase,
+                         dataset_path=dataset_path,
+                         sequence_idx=sequence_idx,
+                         voxel_size=voxel_size,
+                         sub_num=sub_num,
+                         max_time_wdw=max_time_wdw,
+                         oracle_pts=oracle_pts,
+                         use_intensity=use_intensity,
+                         augment_data=augment_data,
+                         input_transforms=input_transforms,
+                         device=device,
+                         ignore_label=ignore_label,
+                         num_classes=num_classes)
+
+        self.maps = yaml.safe_load(open(os.path.join(ABSOLUTE_PATH, mapping_path), 'r'))
+        self.name = 'SemanticSTF'
+
+        remap_dict_val = self.maps["learning_map"]
+        max_key = max(remap_dict_val.keys())
+        remap_lut_val = np.zeros((max_key + 100), dtype=np.int32)
+        remap_lut_val[list(remap_dict_val.keys())] = list(remap_dict_val.values())
+
+        self.remap_lut_val = remap_lut_val
+
+        self.split_size = split_size
+        self.weather = weather
+
+        # Default weather/corruption types for SemanticSTF
+        # Total: 2076 scans (dense_fog: 694, light_fog: 631, snow: 637, rain: 114)
+        if corrupt_list is None:
+            corrupt_list = ['dense_fog', 'light_fog', 'snow', 'rain']
+        self.corrupt_list = corrupt_list
+
+        # Parse all txt files and build weather-to-files mapping
+        self.weather_files = self._parse_all_splits()
+
+        # Count frames per weather
+        self.weather_frame_counts = {w: len(files) for w, files in self.weather_files.items()}
+        self.num_frames = sum(self.weather_frame_counts.values())
+
+        print(f"SemanticSTF dataset loaded:")
+        for w, count in self.weather_frame_counts.items():
+            print(f"  {w}: {count} scans")
+        print(f"  Total: {self.num_frames} scans")
+
+        self.online_sequences = self.get_online_split()
+        self.online_keys = corrupt_list
+
+        self.seq_path_list = {}
+        self.seq_label_list = {}
+
+        self.get_paths()
+
+        self.sub_seq = None
+        self.selected_sequence = None
+        self.pcd_path = []
+        self.label_path = []
+
+        self.set_sequence(self.sequence_idx)
+
+        if clip_range is not None:
+            self.clip_range = np.array(clip_range)
+        else:
+            self.clip_range = None
+
+        self.noisy_odo = noisy_odo
+        self.odo_roto_bounds = odo_roto_bounds
+        self.odo_tras_bounds = odo_tras_bounds
+
+    def _parse_all_splits(self):
+        """Parse train.txt, test.txt, val.txt to get weather-to-files mapping.
+
+        Each txt file has format: filename,weather_type
+        Example: 2018-02-04_11-09-42_00400,snow
+
+        Returns:
+            dict: {weather_type: [(pcd_path, label_path), ...]}
+        """
+        weather_files = {w: [] for w in self.corrupt_list}
+        splits = ['train', 'test', 'val']
+
+        for split in splits:
+            txt_path = os.path.join(self.dataset_path, split, f'{split}.txt')
+            velodyne_dir = os.path.join(self.dataset_path, split, 'velodyne')
+            labels_dir = os.path.join(self.dataset_path, split, 'labels')
+
+            if not os.path.exists(txt_path):
+                print(f"Warning: {txt_path} not found")
+                continue
+
+            with open(txt_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    parts = line.split(',')
+                    if len(parts) != 2:
+                        continue
+                    filename, weather_type = parts[0].strip(), parts[1].strip()
+
+                    # Only process weather types in corrupt_list
+                    if weather_type not in weather_files:
+                        continue
+
+                    pcd_path = os.path.join(velodyne_dir, f'{filename}.bin')
+                    label_path = os.path.join(labels_dir, f'{filename}.label')
+
+                    if os.path.exists(pcd_path):
+                        weather_files[weather_type].append((pcd_path, label_path))
+
+        return weather_files
+
+    def num_sequences(self):
+        return len(self.corrupt_list)
+
+    def check_range(self, pts):
+        range_x = np.logical_and(pts[:, 1] < self.clip_range[0, 1], pts[:, 1] > self.clip_range[0, 0])
+        range_z = np.logical_and(pts[:, 0] < self.clip_range[1, 1], pts[:, 0] > self.clip_range[1, 0])
+        range_idx = np.logical_and(range_x, range_z)
+        return range_idx
+
+    def get_paths(self):
+        """Build path lists for each weather condition."""
+        for weather_type in self.online_keys:
+            files = self.weather_files.get(weather_type, [])
+            frames = self.online_sequences[weather_type]
+
+            self.seq_path_list[weather_type] = []
+            self.seq_label_list[weather_type] = []
+
+            for idx in frames:
+                if idx < len(files):
+                    pcd_path, label_path = files[idx]
+                    self.seq_path_list[weather_type].append(pcd_path)
+                    self.seq_label_list[weather_type].append(label_path)
+
+    def __len__(self):
+        return len(self.pcd_path)
+
+    def get_online_split(self):
+        """Split frames for CTTA across 4 weather domains.
+
+        SemanticSTF has different number of scans per weather:
+        - dense_fog: 694 scans
+        - light_fog: 631 scans
+        - snow: 637 scans
+        - rain: 114 scans
+
+        Each weather domain uses ALL its available frames.
+        The domains are processed sequentially: dense_fog -> light_fog -> snow -> rain
+        """
+        online_sequences = {}
+
+        for weather_type in self.corrupt_list:
+            # Each weather type uses all its frames (indices 0 to num_frames-1)
+            num_frames = self.weather_frame_counts.get(weather_type, 0)
+            online_sequences[weather_type] = np.arange(num_frames)
+
+        return online_sequences
+
+    def get_frame(self, pcd_tmp, label_tmp):
+        """Load a single frame with point cloud and labels.
+
+        SemanticSTF uses (N, 5) format: x, y, z, intensity, ring_id
+        """
+        if pcd_tmp not in self.CACHE:
+            # SemanticSTF velodyne format: (N, 5) - x, y, z, intensity, ring_id
+            pcd = np.fromfile(pcd_tmp, dtype=np.float32).reshape((-1, 5))
+            label = self.load_label_stf(label_tmp)
+            points = pcd[:, :3]
+
+            if self.clip_range is not None:
+                range_idx = self.check_range(points)
+                points = points[range_idx]
+                label = label[range_idx]
+                pcd = pcd[range_idx]  # Also clip pcd for intensity
+
+            if self.use_intensity:
+                colors = pcd[:, 3][..., np.newaxis]  # intensity is column 3
+            else:
+                colors = np.ones((points.shape[0], 1), dtype=np.float32)
+
+            data = {'points': points,
+                    'features': colors,
+                    'labels': label,
+                    'global_points': []}
+        else:
+            data = self.CACHE[pcd_tmp]
+
+        return data
+
+    def __getitem__(self, i):
+        pcd_tmp = self.pcd_path[i]
+        label_tmp = self.label_path[i]
+        data = self.get_frame(pcd_tmp, label_tmp)
+        return data
+
+    def set_sequence(self, idx):
+        """Set the current weather condition sequence."""
+        self.sub_seq = self.online_keys[idx]
+        self.selected_sequence = self.online_sequences[self.sub_seq]
+        self.pcd_path = self.seq_path_list[self.sub_seq]
+        self.label_path = self.seq_label_list[self.sub_seq]
+
+    def load_label_stf(self, label_path):
+        """Load SemanticSTF labels.
+
+        SemanticSTF uses the same label format as SemanticKITTI:
+        - uint32 format where lower 16 bits are semantic label
+        - upper 16 bits are instance ID
+        """
+        if not os.path.exists(label_path):
+            # Return zeros if label file doesn't exist
+            return np.zeros(0, dtype=np.int32)
+
+        label = np.fromfile(label_path, dtype=np.uint32)
+        label = label.reshape((-1))
+        sem_label = label & 0xFFFF  # semantic label in lower half
+        inst_label = label >> 16  # instance id in upper half
+        assert ((sem_label + (inst_label << 16) == label).all())
+        sem_label = self.remap_lut_val[sem_label]
+        return sem_label.astype(np.int32)
+
 
 class OnlineNuScenesDataset(OnlineBaseDataset, ABC):
     def __init__(self,
@@ -1011,7 +1283,10 @@ class OnlineNuScenesDataset(OnlineBaseDataset, ABC):
                  ignore_label=None,
                  clip_range=[[-100, 100], [-100, 100]],
                  num_sweeps=0,
-                 num_classes=7):
+                 num_classes=7,
+                 corrupt='fog',
+                 level='moderate',
+                 corrupt_list=None):
 
         super().__init__(version=version,
                          phase=phase,
@@ -1053,25 +1328,42 @@ class OnlineNuScenesDataset(OnlineBaseDataset, ABC):
 
         self.remap_lut_val = remap_lut_val
 
+        # NuScenes-C corruption parameters
+        self.level = level
+        self.corrupt = corrupt
+        if corrupt_list is None:
+            corrupt_list = ['beam_missing', 'cross_sensor', 'crosstalk', 'fog',
+                           'incomplete_echo', 'motion_blur', 'snow', 'wet_ground']
+        self.corrupt_list = corrupt_list
+
         self.token_list = []
         self.seq_token_list = {}  # {'scene_token': [sample tokens in a scene]}
         self.names2tokens = {}
         self.names2locations = {}  # scene的拍摄地点
-        self.corrupt = ''
-        self.level = ''
 
         self.get_tokens()
 
-        self.online_keys = list(self.seq_token_list.keys())
+        # Get all tokens as a flat list for splitting
+        self.all_tokens = []
+        for scene in self.split:
+            self.all_tokens.extend(self.seq_token_list[scene])
+        self.num_frames = len(self.all_tokens)
 
+        # Split tokens by corruption type (like SemanticKITTI-C)
+        self.online_sequences = self.get_online_split()
+        self.online_keys = self.corrupt_list
+
+        # Create names2locations mapping for corruption types
+        # Use 'mixed' as location since each corruption spans multiple scenes/locations
+        for corrupt_type in self.corrupt_list:
+            self.names2locations[corrupt_type] = 'mixed'
+
+        self.sub_seq = None
         self.selected_sequence = None
 
         self.set_sequence(self.sequence_idx)
 
         self.clip_range = np.array(clip_range)  #点云范围
-
-
-#         self.geometric_path = geometric_path
 
         self.location = None
 
@@ -1084,6 +1376,20 @@ class OnlineNuScenesDataset(OnlineBaseDataset, ABC):
         else:
             print(f'--> INTERPOLATION OFF')
             self.interpolate = False
+
+    def get_online_split(self):
+        """Split tokens into partitions for each corruption type (like SemanticKITTI-C)"""
+        online_sequences = {}
+
+        num_partitions = len(self.corrupt_list)
+        seq_len = self.num_frames // num_partitions
+
+        for k, corrupt_type in enumerate(self.corrupt_list):
+            start_idx = k * seq_len
+            end_idx = (k + 1) * seq_len if k < num_partitions - 1 else self.num_frames
+            online_sequences[corrupt_type] = self.all_tokens[start_idx:end_idx]
+
+        return online_sequences
 
     def get_tokens(self):
         scenes_tokens = {}
@@ -1121,12 +1427,18 @@ class OnlineNuScenesDataset(OnlineBaseDataset, ABC):
             self.seq_token_list[scene] = token_list_seq
 
     def set_sequence(self, idx):
-        self.selected_sequence = self.online_keys[idx]
-        self.token_list = self.seq_token_list[self.selected_sequence]
-        self.location = self.names2locations[self.selected_sequence]
+        """Switch to a specific corruption type sequence"""
+        self.sub_seq = self.online_keys[idx]  # corruption type name (e.g., 'fog')
+        self.corrupt = self.sub_seq  # Update current corruption type
+        self.token_list = self.online_sequences[self.sub_seq]  # tokens for this corruption
+        # Set location from first token's scene
+        if self.token_list:
+            sample_record = self.nusc.get('sample', self.token_list[0])
+            scene = self.nusc.get('scene', sample_record['scene_token'])
+            self.location = self.names2locations.get(scene['name'], None)
 
     def num_sequences(self):
-        return len(self.online_keys)
+        return len(self.corrupt_list)
 
     def check_range(self, pts):
         range_x = np.logical_and(pts[:, 1] < self.clip_range[0, 1], pts[:, 1] > self.clip_range[0, 0])
@@ -1308,8 +1620,9 @@ class OnlineNuScenesDataset(OnlineBaseDataset, ABC):
             scan = np.fromfile(lidar_file, dtype=np.float32)
             points = scan.reshape((-1, 5))[:, :4]
 
-            # lidarseg filename
-            lidar_label_file = self.nusc.get('lidarseg', lidar)['filename']
+            # lidarseg filename - construct directly from sample_data token
+            # Format: {sample_data_token}_lidarseg.bin in lidarseg/v1.0-trainval/
+            lidar_label_file = os.path.join('lidarseg', self.version, f'{lidar}_lidarseg.bin')
             # lidarseg path
             lidarseg_labels_filename = os.path.join(self.nusc.dataroot, self.corrupt, self.level, lidar_label_file)
 #             print('lidarseg_labels_filename')
@@ -1578,8 +1891,10 @@ def get_online_dataset(dataset_name: str,
                        noisy_odo: bool = False,
                        odo_roto_bounds: int = None,
                        odo_tras_bounds: float = None,
-                       synthia_seq: list=None,
-                       corrupt_list: list = None) -> OnlineBaseDataset:
+                       synthia_seq: list = None,
+                       corrupt_list: list = None,
+                       level: str = 'moderate',
+                       weather: str = 'dense_fog') -> OnlineBaseDataset:
 
     if aug_parameters is not None:
         input_transforms = get_augmentations(aug_parameters)
@@ -1633,7 +1948,9 @@ def get_online_dataset(dataset_name: str,
                                                max_time_wdw=max_time_wdw,
                                                oracle_pts=oracle_pts,
                                                ignore_label=ignore_label,
-                                               num_classes=num_classes)
+                                               num_classes=num_classes,
+                                               corrupt_list=corrupt_list,
+                                               level=level)
     
     elif dataset_name == 'synthia':
 
@@ -1650,6 +1967,29 @@ def get_online_dataset(dataset_name: str,
                                                ignore_label=ignore_label,
                                                num_classes=num_classes)
 
+    elif dataset_name == 'SemanticSTF':
+
+        if mapping_path is None:
+            mapping_path = '_resources/semanticstf.yaml'
+
+        online_dataset = OnlineSemanticSTFDataset(dataset_path=dataset_path,
+                                                   mapping_path=mapping_path,
+                                                   version=version,
+                                                   phase='eval',
+                                                   sequence_idx=0,
+                                                   voxel_size=voxel_size,
+                                                   augment_data=augment_data,
+                                                   input_transforms=input_transforms,
+                                                   max_time_wdw=max_time_wdw,
+                                                   oracle_pts=oracle_pts,
+                                                   ignore_label=ignore_label,
+                                                   split_size=split_size,
+                                                   num_classes=num_classes,
+                                                   noisy_odo=noisy_odo,
+                                                   odo_roto_bounds=odo_roto_bounds,
+                                                   odo_tras_bounds=odo_tras_bounds,
+                                                   weather=weather,
+                                                   corrupt_list=corrupt_list)
 
     else:
         raise NotImplementedError
