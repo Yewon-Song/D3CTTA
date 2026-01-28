@@ -10,6 +10,7 @@ from tqdm import tqdm
 import csv
 import pickle
 import open3d as o3d
+from prettytable import PrettyTable
 from .D3CTTA import D3Ctta
 from sklearn.metrics import davies_bouldin_score
 from sklearn.manifold import TSNE
@@ -266,19 +267,36 @@ class OnlineTrainer(object):
         self.load_source_model()
         self.pipeline.adapt_method.copy_model()
 
+        # Store all corruption results for summary table
+        self.all_corruption_results = {}
+
+        print("\n" + "=" * 60)
+        print(f"Starting Adaptation - Level: {self.level}")
+        print(f"Corruptions: {self.corrupt_type}")
+        print("=" * 60 + "\n")
+
         for i, corrupt in enumerate(self.corrupt_type):
             self.corrupt = corrupt
             self.eval_dataset.corrupt = corrupt
             self.adapt_dataset.corrupt = corrupt
 
-            for sequence in tqdm(np.arange(self.seq_domains), desc='Online Adaptation'):
+            for sequence in tqdm(np.arange(self.seq_domains), desc=f'[{i+1}/{len(self.corrupt_type)}] {corrupt}'):
                 sequence_glob = i * self.seq_domains + sequence
                 self.set_sequence(corrupt, sequence_glob)
             # adapt on sequence
                 sequence_dict = self.online_adaptation_routine()
 
                 self.adaptation_results_dict[sequence] = sequence_dict
-            self.save_final_results(i)
+
+            # Save per-corruption results and collect for summary
+            corruption_result = self.save_final_results(i)
+            self.all_corruption_results[corrupt] = corruption_result
+
+            # Print mIoU after each corruption
+            print(f"\n>>> [{corrupt}] mIoU: {corruption_result['miou']*100:.2f}%\n")
+
+        # Save summary table with all corruptions
+        self.save_summary_table()
 
 
 
@@ -518,17 +536,19 @@ class OnlineTrainer(object):
         # finally saves results in a csv file
 
         final_dict = {}
+        all_miou = []
+        all_per_class_iou = []
 
         for seq in np.arange(self.seq_domains):
             # source_results = self.source_results_dict[seq]
-            adaptation_results = self.adaptation_results_dict[seq]      
+            adaptation_results = self.adaptation_results_dict[seq]
 
             # assert len(source_results) == len(adaptation_results)
             num_frames = len(adaptation_results)
 
             # source_results = self.format_val_dict(source_results)
             adaptation_results = self.format_val_dict(adaptation_results)
-            
+
             final_dict[seq] = {}
 
             for k in adaptation_results.keys():
@@ -537,10 +557,18 @@ class OnlineTrainer(object):
                 # final_dict[seq][f'source_{k}'] = source_results[k]
                 final_dict[seq][f'adapted_{k}'] = adaptation_results[k]
 
+            all_miou.append(adaptation_results['miou'])
+            all_per_class_iou.append(adaptation_results['per_class_iou'])
+
         # self.write_csv(final_dict, phase='final')
         # self.write_csv(final_dict, phase='source')
         self.write_csv(seq_id, final_dict, phase='adapt')
         self.save_pickle(final_dict)
+
+        # Return average mIoU and per-class IoU for this corruption
+        avg_miou = np.mean(all_miou)
+        avg_per_class_iou = np.mean(all_per_class_iou, axis=0)
+        return {'miou': avg_miou, 'per_class_iou': avg_per_class_iou}
 
     def save_eval_results(self):
         # stores final results in a final dict
@@ -906,3 +934,86 @@ class OnlineTrainer(object):
         results_dir = os.path.join(os.path.split(self.weights_save_path)[0], self.corrupt)
         with open(os.path.join(results_dir, 'final_all.pkl'), 'wb') as handle:
             pickle.dump(results_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+    def save_summary_table(self):
+        """Save summary table with all corruption results as txt and csv."""
+        if not hasattr(self, 'all_corruption_results') or not self.all_corruption_results:
+            return
+
+        results_dir = os.path.split(self.weights_save_path)[0]
+        os.makedirs(results_dir, exist_ok=True)
+
+        # Define class names based on num_classes
+        if self.num_classes == 7:
+            class_names = ['Vehicle', 'Pedestrian', 'Road', 'Sidewalk', 'Terrain', 'Manmade', 'Vegetation']
+        elif self.num_classes == 3:
+            class_names = ['Background', 'Vehicle', 'Pedestrian']
+        else:
+            class_names = ['Vehicle', 'Pedestrian']
+
+        # Create PrettyTable
+        table = PrettyTable()
+        table.field_names = ['Corruption', 'mIoU'] + class_names
+
+        # Add data rows
+        all_miou = []
+        all_per_class = []
+        for corrupt, result in self.all_corruption_results.items():
+            miou = result['miou'] * 100
+            per_class = result['per_class_iou'] * 100
+            all_miou.append(miou)
+            all_per_class.append(per_class)
+
+            row = [corrupt, f'{miou:.2f}']
+            row.extend([f'{iou:.2f}' for iou in per_class])
+            table.add_row(row)
+
+        # Add average row
+        avg_miou = np.mean(all_miou)
+        avg_per_class = np.mean(all_per_class, axis=0)
+        avg_row = ['Average', f'{avg_miou:.2f}']
+        avg_row.extend([f'{iou:.2f}' for iou in avg_per_class])
+        table.add_row(avg_row)
+
+        # Set table style
+        table.align = 'r'
+        table.align['Corruption'] = 'l'
+
+        # Save as txt
+        txt_path = os.path.join(results_dir, 'summary_results.txt')
+        with open(txt_path, 'w') as f:
+            f.write("=" * 80 + "\n")
+            f.write("ADAPTATION RESULTS SUMMARY\n")
+            f.write("=" * 80 + "\n\n")
+            f.write(f"Level: {self.level}\n")
+            f.write(f"Number of corruptions: {len(self.all_corruption_results)}\n\n")
+            f.write(str(table))
+            f.write("\n\n")
+            f.write(f"Average mIoU: {avg_miou:.2f}%\n")
+        print(f"\nSummary table saved to: {txt_path}")
+
+        # Save as csv
+        csv_path = os.path.join(results_dir, 'summary_results.csv')
+        with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            # Write header
+            writer.writerow(['Corruption', 'mIoU'] + class_names)
+            # Write data rows
+            for corrupt, result in self.all_corruption_results.items():
+                miou = result['miou'] * 100
+                per_class = result['per_class_iou'] * 100
+                row = [corrupt, f'{miou:.2f}']
+                row.extend([f'{iou:.2f}' for iou in per_class])
+                writer.writerow(row)
+            # Write average row
+            avg_row = ['Average', f'{avg_miou:.2f}']
+            avg_row.extend([f'{iou:.2f}' for iou in avg_per_class])
+            writer.writerow(avg_row)
+        print(f"Summary CSV saved to: {csv_path}")
+
+        # Print table to console
+        print("\n" + "=" * 80)
+        print("ADAPTATION RESULTS SUMMARY")
+        print("=" * 80)
+        print(table)
+        print(f"\nAverage mIoU: {avg_miou:.2f}%")

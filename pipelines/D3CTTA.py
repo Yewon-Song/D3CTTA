@@ -164,6 +164,8 @@ class D3Ctta(nn.Module):
         normals = np.fabs(np.asarray(pcd.normals)[:, 2])
         plane_norm_index = normals > 0.9
         manmade_norm_index = normals < 0.1
+        # Fixed: height threshold adjusted for different datasets (SemanticSTF z_mean ~ -1.2)
+        # height_index = points[:, 2] < 0
         height_index = points[:, 2] < -10
         plane_pred_index = ((pred == 2) | (pred == 3) | (pred==4))
         manmade_pred_index = (pred == 5)
