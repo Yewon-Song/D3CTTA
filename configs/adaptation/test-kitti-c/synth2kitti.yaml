@@ -7,7 +7,7 @@ model:
 dataset:
   version: 'full'
   name: 'SemanticKITTI'
-  dataset_path: '/home/yewon/project/tta/datasets/semantickitti-C/SemanticKITTI-C/'
+  dataset_path: '/home/ssongye/projects/tta/datasets/SemanticKITTI-C'
   split_path: null
   target_path: ''
   voxel_size: 0.05
@@ -37,7 +37,7 @@ pipeline:
   segmentation_beta: 1.0
   seed: 1234
   save_dir: 'experiments/baseline/synth4d2kitti/'
-  source_model: '/home/yewon/project/tta/D3CTTA/pretrained_models/d3ctta-download/epoch=99-step=12499.ckpt'
+  source_model: '/home/ssongye/projects/tta/D3CTTA/pretrained_models/d3ctta-download/epoch=99-step=12499.ckpt'
   student_model: null
   topk_matches: -1
   random_time_window: false
