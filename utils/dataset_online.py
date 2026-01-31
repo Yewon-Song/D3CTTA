@@ -1682,6 +1682,142 @@ class OnlineNuScenesDataset(OnlineBaseDataset, ABC):
         return data
 
 
+class OnlineNuScenesContinualDataset(OnlineNuScenesDataset):
+    """Online dataset for nuScenes Continual TTA.
+
+    Groups 150 nuScenes validation scenes by their 4 geographic locations
+    and concatenates all frames within each location into one continuous stream.
+
+    Locations (4 sequences):
+        - singapore-queenstown
+        - boston-seaport
+        - singapore-hollandvillage
+        - singapore-onenorth
+
+    Uses clean nuScenes data (no corruption subdirectory in file paths).
+    The pipeline should set corrupt_type to a single entry (e.g., ['clean'])
+    so that seq_domains = 4 (one per location).
+    """
+
+    LOCATION_ORDER = [
+        'singapore-queenstown',
+        'boston-seaport',
+        'singapore-hollandvillage',
+        'singapore-onenorth',
+    ]
+
+    def __init__(self, **kwargs):
+        # Initialize parent (loads scenes, tokens, locations)
+        super().__init__(**kwargs)
+
+        # Group scenes by location
+        self.location_tokens = {loc: [] for loc in self.LOCATION_ORDER}
+        self.location_scenes = {loc: [] for loc in self.LOCATION_ORDER}
+
+        for scene_name in self.split:
+            location = self.names2locations.get(scene_name, None)
+            if location in self.location_tokens:
+                self.location_tokens[location].extend(self.seq_token_list[scene_name])
+                self.location_scenes[location].append(scene_name)
+
+        # Override online_keys to be location names
+        self.online_keys = [loc for loc in self.LOCATION_ORDER
+                            if len(self.location_tokens[loc]) > 0]
+
+        # Add location->location self-mapping so pipeline per-location
+        # CSV aggregation (names2locations[online_keys[s]]) works correctly
+        for loc in self.online_keys:
+            self.names2locations[loc] = loc
+
+        # Override corrupt_list to match number of location sequences
+        # so that num_sequences() returns 4
+        self.corrupt_list = self.online_keys
+
+        # Print summary
+        print(f"\nnuScenes-Continual dataset loaded:")
+        total = 0
+        for loc in self.online_keys:
+            n_scenes = len(self.location_scenes[loc])
+            n_frames = len(self.location_tokens[loc])
+            total += n_frames
+            print(f"  {loc}: {n_scenes} scenes, {n_frames} frames")
+        print(f"  Total: {len(self.split)} scenes, {total} frames")
+        print(f"  Sequences: {len(self.online_keys)}\n")
+
+        # Set initial sequence
+        self.set_sequence(self.sequence_idx)
+
+    def set_sequence(self, idx):
+        """Switch to a location-based sequence."""
+        if not hasattr(self, 'location_tokens'):
+            # During parent __init__, fall back to parent behavior
+            super().set_sequence(idx)
+            return
+        location = self.online_keys[idx]
+        self.selected_sequence = location
+        self.sub_seq = location
+        self.token_list = self.location_tokens[location]
+        self.location = location
+
+    def num_sequences(self):
+        return len(self.online_keys)
+
+    def get_frame(self, sample_token):
+        """Load frame using clean nuScenes paths (no corruption subdirectory)."""
+        sample_record = self.nusc.get('sample', sample_token)
+        lidar = sample_record['data']['LIDAR_TOP']
+        lidar_data = self.nusc.get('sample_data', lidar)
+
+        # Clean path: no corrupt/level subdirectory
+        lidar_file = os.path.join(self.nusc.dataroot, lidar_data['filename'])
+
+        if self.interpolate:
+            ref_chan = 'LIDAR_TOP'
+            chan = lidar_data['channel']
+            points, points_label, times = self.from_file_multisweep(sample_record,
+                                                                    chan,
+                                                                    ref_chan,
+                                                                    self.num_sweeps,
+                                                                    min_distance=1.0)
+            points = np.ascontiguousarray(points)
+            points_label = self.remap_lut_val[points_label.astype(np.long)]
+        else:
+            scan = np.fromfile(lidar_file, dtype=np.float32)
+            points = scan.reshape((-1, 5))[:, :4]
+
+            # lidarseg label path (clean, no corruption subdirectory)
+            lidar_label_file = self.nusc.get('lidarseg', lidar)['filename']
+            lidarseg_labels_filename = os.path.join(self.nusc.dataroot, lidar_label_file)
+
+            if not os.path.exists(lidarseg_labels_filename):
+                points_label = np.zeros(np.shape(points)[0], dtype=np.int32)
+            else:
+                points_label = np.fromfile(lidarseg_labels_filename, dtype=np.uint8)
+                points_label = self.remap_lut_val[points_label]
+
+        global_points = self.globalize(points, lidar)
+
+        pcd = points[:, :3]
+
+        if self.clip_range is not None:
+            range_idx = self.check_range(pcd)
+            pcd = pcd[range_idx]
+            points_label = points_label[range_idx]
+            global_points = global_points[range_idx]
+
+        if self.use_intensity:
+            colors = points[:, 3][..., np.newaxis]
+        else:
+            colors = np.ones((points.shape[0], 1), dtype=np.float32)
+
+        data = {'points': pcd,
+                'features': colors,
+                'labels': points_label,
+                'global_points': global_points}
+
+        return data
+
+
 class OnlineSynthiaDataset(OnlineBaseDataset, ABC):
     def __init__(self,
                  sequence=None,
@@ -1951,7 +2087,30 @@ def get_online_dataset(dataset_name: str,
                                                num_classes=num_classes,
                                                corrupt_list=corrupt_list,
                                                level=level)
-    
+
+    elif dataset_name == 'nuScenes-Continual':
+        _version = 'v1.0-trainval' if version == 'full' else 'v1.0-mini'
+
+        nusc = NuScenesNew(version=_version, dataroot=dataset_path, verbose=True)
+
+        if mapping_path is None:
+            mapping_path = '_resources/nuscenes.yaml'
+
+        print(f'--> Loading nuScenes-Continual dataset (location-based)')
+
+        online_dataset = OnlineNuScenesContinualDataset(nusc=nusc,
+                                                         mapping_path=mapping_path,
+                                                         version=version,
+                                                         phase='eval',
+                                                         voxel_size=voxel_size,
+                                                         augment_data=augment_data,
+                                                         input_transforms=input_transforms,
+                                                         sub_num=sub_num,
+                                                         max_time_wdw=max_time_wdw,
+                                                         oracle_pts=oracle_pts,
+                                                         ignore_label=ignore_label,
+                                                         num_classes=num_classes)
+
     elif dataset_name == 'synthia':
 
         online_dataset = OnlineSynthiaDataset( sequence=synthia_seq,

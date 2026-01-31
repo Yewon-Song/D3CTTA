@@ -6,8 +6,8 @@ model:
 
 dataset:
   version: 'full'
-  name: 'SemanticKITTI'
-  dataset_path: '/home/ssongye/projects/tta/datasets/SemanticKITTI-C'
+  name: 'nuScenes-Continual'
+  dataset_path: '/home/ssongye/projects/tta/datasets/nuscenes'
   split_path: null
   target_path: ''
   voxel_size: 0.05
@@ -17,10 +17,9 @@ dataset:
   augment_data: false
   max_time_window: 1
   oracle_pts: 0
-  mapping_path: '_resources/semantic-kitti.yaml'
-  corrupt_type: ['beam_missing','cross_sensor','crosstalk','fog','incomplete_echo','motion_blur','snow']
-
-  level : 'moderate'
+  mapping_path: '_resources/nuscenes.yaml'
+  corrupt_type: ['singapore-queenstown', 'boston-seaport', 'singapore-hollandvillage', 'singapore-onenorth']
+  level: 'moderate'
 
 pipeline:
   epochs: 1
@@ -36,7 +35,7 @@ pipeline:
   eps: 0.25
   segmentation_beta: 1.0
   seed: 1234
-  save_dir: 'experiments/baseline/synth4d2kitti/'
+  save_dir: 'experiments/gipso/synth4dnusc_continual/'
   source_model: '/home/ssongye/projects/tta/D3CTTA/pretrained_models/Synth4D-turing/synth_epoch=99-step=24999.ckpt'
   student_model: null
   topk_matches: -1
@@ -52,9 +51,9 @@ pipeline:
   sub_epoch: 1
   num_mc_iterations: 5
   top_class: 0
-  propagate: false
-  top_p: 0.01
-  propagation_size: 10
+  propagate: true
+  top_p: 0.1
+  propagation_size: 5
   metric: 'mcmc_cbst'
   use_matches: false
   propagation_method: 'geometric_features'
@@ -65,10 +64,7 @@ pipeline:
     adaptation_batch_size: 1
     num_workers: 10
 
-
   trainer:
     save_checkpoint_every: 200
     clear_cache_int: 1
     num_sanity_val_steps: 0
-
-
